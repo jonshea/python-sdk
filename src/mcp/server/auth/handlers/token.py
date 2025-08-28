@@ -1,12 +1,13 @@
-import base64
 import hashlib
 import time
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
+import base64
 from pydantic import AnyHttpUrl, AnyUrl, BaseModel, Field, RootModel, ValidationError
 from starlette.requests import Request
 
+from mcp.server.auth.client_credentials import ClientCredentialError, extract_client_credentials
 from mcp.server.auth.errors import stringify_pydantic_error
 from mcp.server.auth.json_response import PydanticJSONResponse
 from mcp.server.auth.middleware.client_auth import AuthenticationError, ClientAuthenticator
@@ -102,10 +103,36 @@ class TokenHandler:
                 )
             )
 
+        # First, look up the client to determine expected auth method
+        client = await self.provider.get_client(token_request.client_id)
+        if not client:
+            return self.response(
+                TokenErrorResponse(
+                    error="invalid_client",
+                    error_description="Invalid client_id",
+                )
+            )
+        
+        # Extract client credentials based on the registered auth method
+        try:
+            client_id, client_secret = extract_client_credentials(
+                request,
+                client,
+                token_request.client_id,
+                token_request.client_secret,
+            )
+        except ClientCredentialError as e:
+            return self.response(
+                TokenErrorResponse(
+                    error=e.error,  # type: ignore
+                    error_description=e.error_description,
+                )
+            )
+        
         try:
             client_info = await self.client_authenticator.authenticate(
-                client_id=token_request.client_id,
-                client_secret=token_request.client_secret,
+                client_id=client_id,
+                client_secret=client_secret,
             )
         except AuthenticationError as e:
             return self.response(

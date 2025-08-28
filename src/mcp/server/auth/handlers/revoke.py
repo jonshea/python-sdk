@@ -6,6 +6,7 @@ from pydantic import BaseModel, ValidationError
 from starlette.requests import Request
 from starlette.responses import Response
 
+from mcp.server.auth.client_credentials import ClientCredentialError, extract_client_credentials
 from mcp.server.auth.errors import (
     stringify_pydantic_error,
 )
@@ -51,10 +52,38 @@ class RevocationHandler:
                 ),
             )
 
+        # First, look up the client to determine expected auth method
+        client = await self.provider.get_client(revocation_request.client_id)
+        if not client:
+            return PydanticJSONResponse(
+                status_code=401,
+                content=RevocationErrorResponse(
+                    error="unauthorized_client",
+                    error_description="Invalid client_id",
+                ),
+            )
+        
+        # Extract client credentials based on the registered auth method
+        try:
+            client_id, client_secret = extract_client_credentials(
+                request,
+                client,
+                revocation_request.client_id,
+                revocation_request.client_secret,
+            )
+        except ClientCredentialError as e:
+            return PydanticJSONResponse(
+                status_code=401,
+                content=RevocationErrorResponse(
+                    error=e.error,  # type: ignore
+                    error_description=e.error_description,
+                ),
+            )
+
         # Authenticate client
         try:
             client = await self.client_authenticator.authenticate(
-                revocation_request.client_id, revocation_request.client_secret
+                client_id, client_secret
             )
         except AuthenticationError as e:
             return PydanticJSONResponse(
